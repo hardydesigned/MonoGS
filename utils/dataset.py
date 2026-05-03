@@ -190,6 +190,51 @@ class EuRoCParser:
         self.frames = frames
 
 
+class UrbanSceneParser:
+    def __init__(self, input_folder):
+        self.input_folder = input_folder
+        color_dir = os.path.join(input_folder, "color")
+        depth_dir = os.path.join(input_folder, "depth")
+        pose_dir = os.path.join(input_folder, "pose")
+
+        color_files = sorted(glob.glob(os.path.join(color_dir, "*.jpg")), key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+        self.n_img = len(color_files)
+        self.color_paths = color_files
+        self.depth_paths = [os.path.join(depth_dir, f"{int(os.path.splitext(os.path.basename(p))[0])}.png") for p in color_files]
+
+        self.poses = []
+        self.frames = []
+        for i, cp in enumerate(color_files):
+            idx = int(os.path.splitext(os.path.basename(cp))[0])
+            pose_c2w = np.loadtxt(os.path.join(pose_dir, f"{idx}.txt"))
+            pose_w2c = np.linalg.inv(pose_c2w)
+            self.poses.append(pose_w2c)
+            self.frames.append({"file_path": cp, "depth_path": self.depth_paths[i], "transform_matrix": pose_w2c.tolist()})
+
+
+class SmallCityParser:
+    def __init__(self, input_folder):
+        self.input_folder = input_folder
+        rgb_dir = os.path.join(input_folder, "rgb")
+        depth_dir = os.path.join(input_folder, "depth")
+        pose_dir = os.path.join(input_folder, "pose")
+
+        color_files = sorted(glob.glob(os.path.join(rgb_dir, "*.png")))
+        self.n_img = len(color_files)
+        self.color_paths = color_files
+
+        self.depth_paths = []
+        self.poses = []
+        self.frames = []
+        for cp in color_files:
+            stem = os.path.splitext(os.path.basename(cp))[0]
+            self.depth_paths.append(os.path.join(depth_dir, f"{stem}.png"))
+            pose_c2w = np.load(os.path.join(pose_dir, f"{stem}.npy"))
+            pose_w2c = np.linalg.inv(pose_c2w)
+            self.poses.append(pose_w2c)
+            self.frames.append({"file_path": cp, "depth_path": self.depth_paths[-1], "transform_matrix": pose_w2c.tolist()})
+
+
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(self, args, path, config):
         self.args = args
@@ -210,13 +255,15 @@ class MonocularDataset(BaseDataset):
     def __init__(self, args, path, config):
         super().__init__(args, path, config)
         calibration = config["Dataset"]["Calibration"]
-        # Camera prameters
-        self.fx = calibration["fx"]
-        self.fy = calibration["fy"]
-        self.cx = calibration["cx"]
-        self.cy = calibration["cy"]
-        self.width = calibration["width"]
-        self.height = calibration["height"]
+        self.resolution_scale = calibration.get("resolution_scale", 1)
+        # Camera parameters (scaled by resolution_scale)
+        s = self.resolution_scale
+        self.fx = calibration["fx"] / s
+        self.fy = calibration["fy"] / s
+        self.cx = calibration["cx"] / s
+        self.cy = calibration["cy"] / s
+        self.width = calibration["width"] // s
+        self.height = calibration["height"] // s
         self.fovx = focal2fov(self.fx, self.width)
         self.fovy = focal2fov(self.fy, self.height)
         self.K = np.array(
@@ -254,6 +301,16 @@ class MonocularDataset(BaseDataset):
             },
         }
 
+    def _apply_max_frames(self, config):
+        max_frames = config["Dataset"].get("max_frames", None)
+        if max_frames is not None:
+            self.num_imgs = min(self.num_imgs, int(max_frames))
+            self.color_paths = self.color_paths[:self.num_imgs]
+            if hasattr(self, "depth_paths"):
+                self.depth_paths = self.depth_paths[:self.num_imgs]
+            if hasattr(self, "poses"):
+                self.poses = self.poses[:self.num_imgs]
+
     def __getitem__(self, idx):
         color_path = self.color_paths[idx]
         pose = self.poses[idx]
@@ -267,6 +324,11 @@ class MonocularDataset(BaseDataset):
         if self.has_depth:
             depth_path = self.depth_paths[idx]
             depth = np.array(Image.open(depth_path)) / self.depth_scale
+
+        if self.resolution_scale != 1:
+            image = cv2.resize(image, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+            if depth is not None:
+                depth = cv2.resize(depth.astype(np.float32), (self.width, self.height), interpolation=cv2.INTER_NEAREST)
 
         image = (
             torch.from_numpy(image / 255.0)
@@ -402,6 +464,7 @@ class TUMDataset(MonocularDataset):
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
         self.poses = parser.poses
+        self._apply_max_frames(config)
 
 
 class ReplicaDataset(MonocularDataset):
@@ -413,6 +476,7 @@ class ReplicaDataset(MonocularDataset):
         self.color_paths = parser.color_paths
         self.depth_paths = parser.depth_paths
         self.poses = parser.poses
+        self._apply_max_frames(config)
 
 
 class EurocDataset(StereoDataset):
@@ -424,6 +488,37 @@ class EurocDataset(StereoDataset):
         self.color_paths = parser.color_paths
         self.color_paths_r = parser.color_paths_r
         self.poses = parser.poses
+
+
+class UrbanSceneDataset(MonocularDataset):
+    def __init__(self, args, path, config):
+        super().__init__(args, path, config)
+        dataset_path = config["Dataset"]["dataset_path"]
+        parser = UrbanSceneParser(dataset_path)
+        self.num_imgs = parser.n_img
+        self.color_paths = parser.color_paths
+        self.depth_paths = parser.depth_paths
+        self.poses = parser.poses
+        self._apply_max_frames(config)
+
+
+class SmallCityDataset(MonocularDataset):
+    def __init__(self, args, path, config):
+        super().__init__(args, path, config)
+        dataset_path = config["Dataset"]["dataset_path"]
+        parser = SmallCityParser(dataset_path)
+        self.num_imgs = parser.n_img
+        self.color_paths = parser.color_paths
+        self.depth_paths = parser.depth_paths
+        self.poses = parser.poses
+        self._apply_max_frames(config)
+
+    def __getitem__(self, idx):
+        image, depth, pose = super().__getitem__(idx)
+        # RGBA → RGB: drop alpha channel
+        if image.shape[0] == 4:
+            image = image[:3]
+        return image, depth, pose
 
 
 class RealsenseDataset(BaseDataset):
@@ -528,5 +623,9 @@ def load_dataset(args, path, config):
         return EurocDataset(args, path, config)
     elif config["Dataset"]["type"] == "realsense":
         return RealsenseDataset(args, path, config)
+    elif config["Dataset"]["type"] == "urbanscene":
+        return UrbanSceneDataset(args, path, config)
+    elif config["Dataset"]["type"] == "smallcity":
+        return SmallCityDataset(args, path, config)
     else:
         raise ValueError("Unknown dataset type")

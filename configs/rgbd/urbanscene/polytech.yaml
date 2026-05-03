@@ -1,0 +1,20 @@
+inherit_from: "configs/rgbd/urbanscene/base_config.yaml"
+
+Dataset:
+  dataset_path: "/root/datasets/urbanscene/polytech_prepared"
+  max_frames: 200
+  Calibration:
+    fx: 9065.359895
+    fy: 9065.359895
+    cx: 3000.0
+    cy: 2000.0
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+    k3: 0.0
+    distorted: False
+    width: 6000
+    height: 4000
+    depth_scale: 1000.0
+    resolution_scale: 4

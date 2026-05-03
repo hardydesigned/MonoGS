@@ -1,0 +1,19 @@
+inherit_from: "configs/rgbd/smallcity/base_config.yaml"
+
+Dataset:
+  dataset_path: "/root/datasets/external/hierarchical_small_city"
+  max_frames: 200
+  Calibration:
+    fx: 486.970081601
+    fy: 487.090151561
+    cx: 512.0
+    cy: 345.0
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+    k3: 0.0
+    distorted: False
+    width: 1024
+    height: 690
+    depth_scale: 1000.0
